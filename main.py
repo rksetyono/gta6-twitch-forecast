@@ -24,8 +24,11 @@ Model (fit fresh on every run, from the case's own `comparables`):
      The slope is clamped to [0, 1.05].
   4. Quantiles are log-normal around the regression prediction, with spread
      0.9x the per-hour residual standard deviation (floored at 0.15 log
-     units), widened a little when hour 1's print lies outside the range of
-     hour-1 prints the regression was fit on (extrapolation is less certain).
+     units) — the residual sd itself is averaged over hours h-1, h, h+1,
+     because a single hour's sd is estimated from only ~30 curves and is
+     noisy while true uncertainty evolves smoothly across the day — widened
+     a little when hour 1's print lies outside the range of hour-1 prints
+     the regression was fit on (extrapolation is less certain).
 
 Fallbacks keep every case valid: if too few analogues survive the filter the
 filter is relaxed in steps; if a single hour has too few points the
@@ -175,6 +178,21 @@ def median_shape(curves, hour):
     return median, max(SPREAD_FLOOR, iqr / 1.349)
 
 
+def smoothed_resid_sd(curves, hour):
+    """Residual sd for `hour`, averaged over neighbouring hours.
+
+    The per-hour residual sd is estimated from only ~30 curves, so it is
+    noisy hour to hour, while the true forecast uncertainty evolves
+    smoothly across the day (viewing patterns change gradually). Averaging
+    the fitted sd over hours h-1, h, h+1 (where a fit exists) removes
+    estimation noise without biasing the level.
+    """
+    window = [fit_hour(curves, h) for h in range(max(2, hour - 1),
+                                                min(24, hour + 1) + 1)]
+    sds = [fit[2] for fit in window if fit is not None]
+    return sum(sds) / len(sds) if sds else None
+
+
 def hour_quantiles(p1, hour, curves, log_p1_range):
     """The five quantiles for one forecast hour."""
     log_p1 = math.log(p1)
@@ -183,7 +201,10 @@ def hour_quantiles(p1, hour, curves, log_p1_range):
         intercept, slope, resid_sd, _ = fit
         slope = min(SLOPE_MAX, max(SLOPE_MIN, slope))
         centre = intercept + slope * log_p1
-        spread = max(SPREAD_FLOOR, SPREAD_SCALE * resid_sd)
+        smoothed = smoothed_resid_sd(curves, hour)
+        spread = max(SPREAD_FLOOR,
+                     SPREAD_SCALE * (smoothed if smoothed is not None
+                                     else resid_sd))
     else:
         shape = median_shape(curves, hour)
         if shape is None:
